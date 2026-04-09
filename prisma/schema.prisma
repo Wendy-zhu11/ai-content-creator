@@ -1,0 +1,95 @@
+// Prisma Schema for AI Content Creator
+// 数据库模型定义
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// 用户模型
+model User {
+  id        String    @id @default(cuid())
+  email     String    @unique
+  name      String
+  password  String    // 加密后的密码
+  avatar    String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  // 关联关系
+  contents  Content[]
+  templates Template[]
+
+  @@map("users")
+}
+
+// 内容模型
+model Content {
+  id        String      @id @default(cuid())
+  userId    String
+  type      ContentType
+  title     String
+  input     String      @db.Text      // 用户输入
+  output    String      @db.Text      // AI生成的内容
+  template  String?     @db.Text      // 使用的模板提示词
+  options   Json?                     // 生成选项（JSON格式）
+  isPublic  Boolean     @default(false) // 是否公开
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  // 关联关系
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([type])
+  @@map("contents")
+}
+
+// 内容类型枚举
+enum ContentType {
+  ARTICLE   // 文章
+  SOCIAL    // 社交媒体
+  AD        // 广告文案
+  EMAIL     // 邮件
+  PRODUCT   // 产品描述
+  SCRIPT    // 脚本
+  OTHER     // 其他
+}
+
+// 内容模板模型
+model Template {
+  id          String      @id @default(cuid())
+  userId      String?
+  name        String
+  description String      @db.Text
+  type        ContentType
+  prompt      String      @db.Text  // 模板提示词
+  isPublic    Boolean     @default(false)
+  usageCount  Int         @default(0) // 使用次数
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  // 关联关系
+  user        User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([type])
+  @@index([isPublic])
+  @@map("templates")
+}
+
+// 使用记录模型（用于统计分析）
+model UsageLog {
+  id        String   @id @default(cuid())
+  userId    String
+  action    String              // 操作类型
+  metadata  Json?               // 元数据
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([createdAt])
+  @@map("usage_logs")
+}
