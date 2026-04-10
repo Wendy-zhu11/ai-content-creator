@@ -274,7 +274,7 @@ export default function GeneratorPage() {
                   <CardHeader>
                     <CardTitle>推荐配图</CardTitle>
                     <CardDescription>
-                      来自 Unsplash 的高质量版权图片
+                      来自 Pexels 的高质量版权图片
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
