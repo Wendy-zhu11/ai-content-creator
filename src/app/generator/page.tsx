@@ -31,7 +31,7 @@ interface Image {
 }
 
 // 对话阶段
-type ConversationStage = 'initial' | 'clarifying' | 'generating' | 'completed'
+type ConversationStage = 'initial' | 'ask_topic' | 'ask_style' | 'generating' | 'completed'
 
 /**
  * 对话式AI内容生成器页面
@@ -41,21 +41,15 @@ export default function GeneratorPage() {
     {
       id: '1',
       role: 'assistant',
-      content: '你好！我是AI内容创作助手 ✨\n\n请告诉我你想创作什么类型的内容？\n比如：「穿搭」「美食探店」「旅行攻略」等',
-      type: 'text',
-    },
-    {
-      id: '2',
-      role: 'assistant',
-      content: '或者选择一个内容类型：',
+      content: '你好！我是AI内容创作助手 ✨\n\n请告诉我你想创作什么类型的内容？',
       type: 'options',
       options: [
-        { label: '👗 穿搭分享', value: '穿搭' },
-        { label: '🍜 美食探店', value: '美食探店' },
-        { label: '✈️ 旅行攻略', value: '旅行攻略' },
-        { label: '💄 美妆护肤', value: '美妆' },
-        { label: '📝 生活分享', value: '生活' },
-        { label: '🛍️ 好物推荐', value: '好物推荐' },
+        { label: '👗 穿搭分享', value: 'category:穿搭' },
+        { label: '🍜 美食探店', value: 'category:美食探店' },
+        { label: '✈️ 旅行攻略', value: 'category:旅行攻略' },
+        { label: '💄 美妆护肤', value: 'category:美妆' },
+        { label: '📝 生活分享', value: 'category:生活' },
+        { label: '🛍️ 好物推荐', value: 'category:好物推荐' },
       ],
     },
   ])
@@ -65,8 +59,6 @@ export default function GeneratorPage() {
     category?: string
     topic?: string
     style?: string
-    target?: string
-    count?: number
   }>({})
   const [isLoading, setIsLoading] = useState(false)
   
@@ -90,12 +82,13 @@ export default function GeneratorPage() {
     }
 
     setMessages(prev => [...prev, userMessage])
+    const userInput = input
     setInput('')
     setIsLoading(true)
 
     try {
       // 根据当前阶段处理
-      const response = await processUserInput(input, context, stage)
+      const response = await processUserInput(userInput, context, stage)
       
       setMessages(prev => [...prev, ...response.messages])
       
@@ -108,8 +101,8 @@ export default function GeneratorPage() {
       }
 
       // 如果需要生成内容
-      if (response.shouldGenerate) {
-        await generateContent(response.finalInput || '', response.images || [])
+      if (response.shouldGenerate && response.finalInput) {
+        await generateContent(response.finalInput)
       }
     } catch (err) {
       console.error('处理失败:', err)
@@ -126,9 +119,43 @@ export default function GeneratorPage() {
 
   // 点击选项
   const handleOptionClick = async (value: string) => {
-    setInput(value)
-    await new Promise(resolve => setTimeout(resolve, 100))
-    handleSend()
+    // 先添加用户消息
+    const optionLabel = value.includes('category:') 
+      ? value.replace('category:', '')
+      : value.includes('style:') 
+        ? value.replace('style:', '')
+        : value
+    
+    setMessages(prev => [...prev, {
+      id: Date.now().toString(),
+      role: 'user',
+      content: optionLabel,
+      type: 'text',
+    }])
+    
+    setIsLoading(true)
+    
+    try {
+      const response = await processUserInput(value, context, stage)
+      
+      setMessages(prev => [...prev, ...response.messages])
+      
+      if (response.context) {
+        setContext(prev => ({ ...prev, ...response.context }))
+      }
+      
+      if (response.nextStage) {
+        setStage(response.nextStage)
+      }
+
+      if (response.shouldGenerate && response.finalInput) {
+        await generateContent(response.finalInput)
+      }
+    } catch (err) {
+      console.error('处理失败:', err)
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   // 处理用户输入
@@ -142,71 +169,113 @@ export default function GeneratorPage() {
     nextStage?: ConversationStage
     shouldGenerate?: boolean
     finalInput?: string
-    images?: Image[]
   }> => {
-    // 初始阶段：识别分类
-    if (currentStage === 'initial') {
-      const category = detectCategory(userInput)
-      
+    // 处理分类选择
+    if (userInput.startsWith('category:')) {
+      const category = userInput.replace('category:', '')
       return {
         messages: [
           {
             id: Date.now().toString(),
             role: 'assistant',
-            content: `好的！${getCategoryEmoji(category)}${category}内容\n\n请告诉我具体的主题是什么？\n比如：「春日穿搭」「成都美食」「大理攻略」`,
+            content: `好的！${getCategoryEmoji(category)}${category}内容\n\n请告诉我具体的主题是什么？\n比如：「${getCategoryExample(category)}」`,
             type: 'text',
           },
         ],
         context: { category },
-        nextStage: 'clarifying',
+        nextStage: 'ask_topic',
       }
     }
 
-    // 澄清阶段：收集更多信息
-    if (currentStage === 'clarifying') {
-      const newContext = { ...currentContext, topic: userInput }
+    // 处理风格选择
+    if (userInput.startsWith('style:')) {
+      const style = userInput.replace('style:', '')
+      const newContext = { ...currentContext, style }
+      const finalInput = `${currentContext.topic || ''}，${style}`
       
-      // 根据分类询问细节
-      const followUpQuestions = getFollowUpQuestions(currentContext.category || '', userInput)
-      
-      // 如果已经收集足够信息，直接生成
-      if (currentContext.style) {
-        return {
-          messages: [
-            {
-              id: Date.now().toString(),
-              role: 'assistant',
-              content: '好的！正在为你生成内容...',
-              type: 'text',
-            },
-          ],
-          context: newContext,
-          nextStage: 'generating',
-          shouldGenerate: true,
-          finalInput: buildFinalInput(newContext),
-        }
-      }
-
       return {
         messages: [
           {
             id: Date.now().toString(),
             role: 'assistant',
-            content: followUpQuestions.question,
-            type: 'options',
-            options: followUpQuestions.options,
+            content: '好的！正在为你生成内容... ✨',
+            type: 'text',
           },
         ],
         context: newContext,
-        nextStage: 'clarifying',
+        nextStage: 'generating',
+        shouldGenerate: true,
+        finalInput,
       }
     }
 
+    // 初始阶段：识别分类
+    if (currentStage === 'initial') {
+      const category = detectCategory(userInput)
+      return {
+        messages: [
+          {
+            id: Date.now().toString(),
+            role: 'assistant',
+            content: `好的！${getCategoryEmoji(category)}${category}内容\n\n请告诉我具体的主题是什么？`,
+            type: 'text',
+          },
+        ],
+        context: { category },
+        nextStage: 'ask_topic',
+      }
+    }
+
+    // 询问主题阶段
+    if (currentStage === 'ask_topic') {
+      const newContext = { ...currentContext, topic: userInput }
+      const followUp = getFollowUpQuestions(currentContext.category || '', userInput)
+      
+      return {
+        messages: [
+          {
+            id: Date.now().toString(),
+            role: 'assistant',
+            content: followUp.question,
+            type: 'options',
+            options: followUp.options.map(opt => ({
+              label: opt.label,
+              value: `style:${opt.value}`,
+            })),
+          },
+        ],
+        context: newContext,
+        nextStage: 'ask_style',
+      }
+    }
+
+    // 询问风格阶段 - 用户手动输入（不是点击选项）
+    if (currentStage === 'ask_style') {
+      const newContext = { ...currentContext, style: userInput }
+      const finalInput = `${currentContext.topic || ''}，${userInput}`
+      
+      return {
+        messages: [
+          {
+            id: Date.now().toString(),
+            role: 'assistant',
+            content: '好的！正在为你生成内容... ✨',
+            type: 'text',
+          },
+        ],
+        context: newContext,
+        nextStage: 'generating',
+        shouldGenerate: true,
+        finalInput,
+      }
+    }
+
+    // 默认：直接生成
     return {
       messages: [{
         id: Date.now().toString(),
         role: 'assistant',
-        content: '好的，我来帮你生成内容！',
+        content: '好的！正在为你生成内容... ✨',
         type: 'text',
       }],
       shouldGenerate: true,
@@ -215,7 +284,7 @@ export default function GeneratorPage() {
   }
 
   // 生成内容
-  const generateContent = async (finalInput: string, images: Image[] = []) => {
+  const generateContent = async (finalInput: string) => {
     try {
       // 调用生成API
       const response = await fetch('/api/generate', {
@@ -249,10 +318,10 @@ export default function GeneratorPage() {
           content: '内容已生成！✨\n\n还需要调整吗？',
           type: 'options',
           options: [
-            { label: '📝 改短一点', value: '精简内容' },
-            { label: '🎨 换个风格', value: '换风格' },
-            { label: '🔄 重新生成', value: '重新生成' },
-            { label: '✅ 满意了', value: '完成' },
+            { label: '📝 改短一点', value: 'style:精简版' },
+            { label: '🎨 换个风格', value: 'style:活泼风格' },
+            { label: '🔄 重新生成', value: 'category:重新生成' },
+            { label: '✅ 满意了', value: 'done' },
           ],
         }])
         
@@ -260,6 +329,12 @@ export default function GeneratorPage() {
       }
     } catch (err) {
       console.error('生成失败:', err)
+      setMessages(prev => [...prev, {
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: '生成失败，请重试～',
+        type: 'text',
+      }])
     }
   }
 
@@ -295,6 +370,19 @@ export default function GeneratorPage() {
     return emojis[category] || '✨'
   }
 
+  // 获取分类示例
+  const getCategoryExample = (category: string): string => {
+    const examples: Record<string, string> = {
+      '穿搭': '春日穿搭、通勤穿搭、约会穿搭',
+      '美食探店': '成都美食、探店测评、餐厅推荐',
+      '旅行攻略': '大理攻略、周末短途、穷游攻略',
+      '美妆': '日常妆容、护肤心得、好物推荐',
+      '生活': '生活日常、经验分享、好物推荐',
+      '好物推荐': '居家好物、平价好物、学生党推荐',
+    }
+    return examples[category] || '任何你想分享的内容'
+  }
+
   // 获取追问问题
   const getFollowUpQuestions = (category: string, topic: string): { question: string; options: Option[] } => {
     if (category === '穿搭') {
@@ -313,20 +401,20 @@ export default function GeneratorPage() {
       return {
         question: `关于「${topic}」，你想要什么类型的内容？`,
         options: [
-          { label: '📍 探店测评', value: '探店测评风格' },
-          { label: '📖 食谱教程', value: '食谱教程风格' },
-          { label: '🏆 好店推荐', value: '好店推荐风格' },
+          { label: '📍 探店测评', value: '探店测评风格，带价格和推荐' },
+          { label: '📖 食谱教程', value: '食谱教程风格，详细步骤' },
+          { label: '🏆 好店推荐', value: '好店推荐风格，简洁明了' },
         ],
       }
     }
     
     if (category === '旅行攻略') {
       return {
-        question: `关于「${topic}」，你的预算和天数是？`,
+        question: `关于「${topic}」，你的旅行偏好是？`,
         options: [
-          { label: '💰 穷游攻略', value: '穷游预算攻略' },
-          { label: '⭐ 精致游攻略', value: '精致游攻略' },
-          { label: '📅 周末短途', value: '周末短途攻略' },
+          { label: '💰 穷游攻略', value: '穷游预算攻略，省钱实用' },
+          { label: '⭐ 精致游', value: '精致游攻略，品质体验' },
+          { label: '📅 周末短途', value: '周末短途攻略，2-3天' },
         ],
       }
     }
@@ -334,21 +422,11 @@ export default function GeneratorPage() {
     return {
       question: '想要什么风格的内容？',
       options: [
-        { label: '📝 干货分享', value: '干货分享风格' },
-        { label: '💬 经验心得', value: '经验心得风格' },
-        { label: '🎯 种草推荐', value: '种草推荐风格' },
+        { label: '📝 干货分享', value: '干货分享风格，实用为主' },
+        { label: '💬 经验心得', value: '经验心得风格，真实感受' },
+        { label: '🎯 种草推荐', value: '种草推荐风格，吸引力强' },
       ],
     }
-  }
-
-  // 构建最终输入
-  const buildFinalInput = (ctx: typeof context): string => {
-    const parts = []
-    if (ctx.topic) parts.push(ctx.topic)
-    if (ctx.style) parts.push(ctx.style)
-    if (ctx.target) parts.push(`面向${ctx.target}`)
-    if (ctx.count) parts.push(`${ctx.count}套`)
-    return parts.join('，')
   }
 
   // 复制内容
