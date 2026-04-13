@@ -1,23 +1,25 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
-// 内容类型选项
-const contentTypes = [
-  { value: 'article', label: '文章', description: '博客、新闻、教程等' },
-  { value: 'social', label: '社交媒体', description: '微博、朋友圈、小红书等' },
-  { value: 'ad', label: '广告文案', description: '产品推广、营销文案' },
-  { value: 'email', label: '邮件', description: '商务邮件、营销邮件' },
-  { value: 'product', label: '产品描述', description: '电商产品介绍' },
-  { value: 'script', label: '脚本', description: '视频脚本、直播话术' },
-]
+// 对话消息类型
+interface Message {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  type: 'text' | 'options' | 'result'
+  options?: Option[]
+  images?: Image[]
+}
 
-// 图片类型定义
+interface Option {
+  label: string
+  value: string
+}
+
 interface Image {
   id: string
   urls: {
@@ -26,108 +28,349 @@ interface Image {
     full: string
   }
   alt_description: string
-  user: {
-    name: string
-    link: string
-  }
 }
 
+// 对话阶段
+type ConversationStage = 'initial' | 'clarifying' | 'generating' | 'completed'
+
 /**
- * AI内容生成器页面
+ * 对话式AI内容生成器页面
  */
 export default function GeneratorPage() {
-  const [selectedType, setSelectedType] = useState('article')
+  const [messages, setMessages] = useState<Message[]>([
+    {
+      id: '1',
+      role: 'assistant',
+      content: '你好！我是AI内容创作助手 ✨\n\n请告诉我你想创作什么类型的内容？\n比如：「穿搭」「美食探店」「旅行攻略」等',
+      type: 'text',
+    },
+    {
+      id: '2',
+      role: 'assistant',
+      content: '或者选择一个内容类型：',
+      type: 'options',
+      options: [
+        { label: '👗 穿搭分享', value: '穿搭' },
+        { label: '🍜 美食探店', value: '美食探店' },
+        { label: '✈️ 旅行攻略', value: '旅行攻略' },
+        { label: '💄 美妆护肤', value: '美妆' },
+        { label: '📝 生活分享', value: '生活' },
+        { label: '🛍️ 好物推荐', value: '好物推荐' },
+      ],
+    },
+  ])
   const [input, setInput] = useState('')
-  const [details, setDetails] = useState('')
-  const [output, setOutput] = useState('')
-  const [images, setImages] = useState<Image[]>([])
+  const [stage, setStage] = useState<ConversationStage>('initial')
+  const [context, setContext] = useState<{
+    category?: string
+    topic?: string
+    style?: string
+    target?: string
+    count?: number
+  }>({})
   const [isLoading, setIsLoading] = useState(false)
-  const [isLoadingImages, setIsLoadingImages] = useState(false)
-  const [error, setError] = useState('')
+  
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
 
-  // 处理生成 - 调用真实的 DeepSeek API
-  const handleGenerate = async () => {
-    if (!input.trim()) {
-      setError('请输入内容描述')
-      return
+  // 自动滚动到底部
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
+
+  // 发送消息
+  const handleSend = async () => {
+    if (!input.trim() || isLoading) return
+
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      role: 'user',
+      content: input,
+      type: 'text',
     }
 
+    setMessages(prev => [...prev, userMessage])
+    setInput('')
     setIsLoading(true)
-    setError('')
-    setOutput('')
-    setImages([])
 
     try {
-      // 构建完整的输入
-      const fullInput = details.trim() 
-        ? `${input}\n\n详细要求：${details}` 
-        : input
+      // 根据当前阶段处理
+      const response = await processUserInput(input, context, stage)
+      
+      setMessages(prev => [...prev, ...response.messages])
+      
+      if (response.context) {
+        setContext(prev => ({ ...prev, ...response.context }))
+      }
+      
+      if (response.nextStage) {
+        setStage(response.nextStage)
+      }
 
-      // 调用后端 API 生成文案
+      // 如果需要生成内容
+      if (response.shouldGenerate) {
+        await generateContent(response.finalInput || '', response.images || [])
+      }
+    } catch (err) {
+      console.error('处理失败:', err)
+      setMessages(prev => [...prev, {
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: '抱歉，处理出错了，请重试一下～',
+        type: 'text',
+      }])
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  // 点击选项
+  const handleOptionClick = async (value: string) => {
+    setInput(value)
+    await new Promise(resolve => setTimeout(resolve, 100))
+    handleSend()
+  }
+
+  // 处理用户输入
+  const processUserInput = async (
+    userInput: string, 
+    currentContext: typeof context, 
+    currentStage: ConversationStage
+  ): Promise<{
+    messages: Message[]
+    context?: typeof context
+    nextStage?: ConversationStage
+    shouldGenerate?: boolean
+    finalInput?: string
+    images?: Image[]
+  }> => {
+    // 初始阶段：识别分类
+    if (currentStage === 'initial') {
+      const category = detectCategory(userInput)
+      
+      return {
+        messages: [
+          {
+            id: Date.now().toString(),
+            role: 'assistant',
+            content: `好的！${getCategoryEmoji(category)}${category}内容\n\n请告诉我具体的主题是什么？\n比如：「春日穿搭」「成都美食」「大理攻略」`,
+            type: 'text',
+          },
+        ],
+        context: { category },
+        nextStage: 'clarifying',
+      }
+    }
+
+    // 澄清阶段：收集更多信息
+    if (currentStage === 'clarifying') {
+      const newContext = { ...currentContext, topic: userInput }
+      
+      // 根据分类询问细节
+      const followUpQuestions = getFollowUpQuestions(currentContext.category || '', userInput)
+      
+      // 如果已经收集足够信息，直接生成
+      if (currentContext.style) {
+        return {
+          messages: [
+            {
+              id: Date.now().toString(),
+              role: 'assistant',
+              content: '好的！正在为你生成内容...',
+              type: 'text',
+            },
+          ],
+          context: newContext,
+          nextStage: 'generating',
+          shouldGenerate: true,
+          finalInput: buildFinalInput(newContext),
+        }
+      }
+
+      return {
+        messages: [
+          {
+            id: Date.now().toString(),
+            role: 'assistant',
+            content: followUpQuestions.question,
+            type: 'options',
+            options: followUpQuestions.options,
+          },
+        ],
+        context: newContext,
+        nextStage: 'clarifying',
+      }
+    }
+
+    return {
+      messages: [{
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: '好的，我来帮你生成内容！',
+        type: 'text',
+      }],
+      shouldGenerate: true,
+      finalInput: userInput,
+    }
+  }
+
+  // 生成内容
+  const generateContent = async (finalInput: string, images: Image[] = []) => {
+    try {
+      // 调用生成API
       const response = await fetch('/api/generate', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          type: selectedType,
-          input: fullInput,
-          options: {
-            language: 'zh',
-          }
+          type: 'social',
+          input: finalInput,
+          options: { language: 'zh' },
         }),
       })
 
       const data = await response.json()
 
       if (data.success) {
-        setOutput(data.data)
+        // 获取配图
+        const imagesResponse = await fetch(`/api/images?query=${encodeURIComponent(finalInput)}&count=6`)
+        const imagesData = await imagesResponse.json()
         
-        // 自动搜索相关配图
-        fetchImages(input)
-      } else {
-        setError(data.error || '生成失败，请重试')
+        const resultMessage: Message = {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: data.data,
+          type: 'result',
+          images: imagesData.success ? imagesData.data : [],
+        }
+
+        setMessages(prev => [...prev, resultMessage, {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: '内容已生成！✨\n\n还需要调整吗？',
+          type: 'options',
+          options: [
+            { label: '📝 改短一点', value: '精简内容' },
+            { label: '🎨 换个风格', value: '换风格' },
+            { label: '🔄 重新生成', value: '重新生成' },
+            { label: '✅ 满意了', value: '完成' },
+          ],
+        }])
+        
+        setStage('completed')
       }
-    } catch (err: any) {
-      console.error('API 调用失败:', err)
-      setError('网络错误，请检查连接后重试')
-    } finally {
-      setIsLoading(false)
+    } catch (err) {
+      console.error('生成失败:', err)
     }
   }
 
-  // 获取配图
-  const fetchImages = async (query: string) => {
-    setIsLoadingImages(true)
-    try {
-      const response = await fetch(`/api/images?query=${encodeURIComponent(query)}&count=6`)
-      const data = await response.json()
-      
-      if (data.success) {
-        setImages(data.data)
-      }
-    } catch (err) {
-      console.error('图片搜索失败:', err)
-    } finally {
-      setIsLoadingImages(false)
+  // 识别分类
+  const detectCategory = (input: string): string => {
+    const keywords: Record<string, string[]> = {
+      '穿搭': ['穿搭', '衣服', '搭配', '时尚', 'look', 'OOTD'],
+      '美食探店': ['美食', '探店', '餐厅', '好吃', '吃货'],
+      '旅行攻略': ['旅行', '旅游', '攻略', '景点', '打卡'],
+      '美妆': ['化妆', '护肤', '美妆', '彩妆', '口红'],
+      '生活': ['生活', '日常', '分享', '经验'],
+      '好物推荐': ['好物', '推荐', '种草', '购物'],
     }
+
+    for (const [category, words] of Object.entries(keywords)) {
+      if (words.some(word => input.includes(word))) {
+        return category
+      }
+    }
+    return '生活'
+  }
+
+  // 获取分类emoji
+  const getCategoryEmoji = (category: string): string => {
+    const emojis: Record<string, string> = {
+      '穿搭': '👗',
+      '美食探店': '🍜',
+      '旅行攻略': '✈️',
+      '美妆': '💄',
+      '生活': '📝',
+      '好物推荐': '🛍️',
+    }
+    return emojis[category] || '✨'
+  }
+
+  // 获取追问问题
+  const getFollowUpQuestions = (category: string, topic: string): { question: string; options: Option[] } => {
+    if (category === '穿搭') {
+      return {
+        question: `关于「${topic}」，你想要什么风格？`,
+        options: [
+          { label: '🌸 温柔甜美', value: '温柔甜美风格' },
+          { label: '😎 休闲日常', value: '休闲日常风格' },
+          { label: '✨ 精致优雅', value: '精致优雅风格' },
+          { label: '🔥 个性潮流', value: '个性潮流风格' },
+        ],
+      }
+    }
+    
+    if (category === '美食探店') {
+      return {
+        question: `关于「${topic}」，你想要什么类型的内容？`,
+        options: [
+          { label: '📍 探店测评', value: '探店测评风格' },
+          { label: '📖 食谱教程', value: '食谱教程风格' },
+          { label: '🏆 好店推荐', value: '好店推荐风格' },
+        ],
+      }
+    }
+    
+    if (category === '旅行攻略') {
+      return {
+        question: `关于「${topic}」，你的预算和天数是？`,
+        options: [
+          { label: '💰 穷游攻略', value: '穷游预算攻略' },
+          { label: '⭐ 精致游攻略', value: '精致游攻略' },
+          { label: '📅 周末短途', value: '周末短途攻略' },
+        ],
+      }
+    }
+
+    return {
+      question: '想要什么风格的内容？',
+      options: [
+        { label: '📝 干货分享', value: '干货分享风格' },
+        { label: '💬 经验心得', value: '经验心得风格' },
+        { label: '🎯 种草推荐', value: '种草推荐风格' },
+      ],
+    }
+  }
+
+  // 构建最终输入
+  const buildFinalInput = (ctx: typeof context): string => {
+    const parts = []
+    if (ctx.topic) parts.push(ctx.topic)
+    if (ctx.style) parts.push(ctx.style)
+    if (ctx.target) parts.push(`面向${ctx.target}`)
+    if (ctx.count) parts.push(`${ctx.count}套`)
+    return parts.join('，')
   }
 
   // 复制内容
-  const handleCopy = () => {
-    navigator.clipboard.writeText(output)
-    alert('已复制到剪贴板')
+  const handleCopy = (content: string) => {
+    navigator.clipboard.writeText(content)
+    setMessages(prev => [...prev, {
+      id: Date.now().toString(),
+      role: 'assistant',
+      content: '已复制到剪贴板！📋',
+      type: 'text',
+    }])
   }
 
   // 下载图片
-  const handleDownloadImage = async (imageUrl: string, imageName: string) => {
+  const handleDownloadImage = async (imageUrl: string) => {
     try {
       const response = await fetch(imageUrl)
       const blob = await response.blob()
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `${imageName}.jpg`
+      a.download = `image-${Date.now()}.jpg`
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
@@ -138,194 +381,151 @@ export default function GeneratorPage() {
   }
 
   return (
-    <main className="min-h-screen bg-gray-50">
+    <main className="min-h-screen bg-gradient-to-b from-pink-50 to-white">
       {/* 导航栏 */}
-      <nav className="bg-white border-b">
-        <div className="container mx-auto px-4 py-4 flex justify-between items-center">
-          <a href="/" className="text-2xl font-bold text-primary">
-            AI内容创作助手
+      <nav className="bg-white border-b sticky top-0 z-10">
+        <div className="container mx-auto px-4 py-3 flex justify-between items-center">
+          <a href="/" className="text-xl font-bold text-pink-600">
+            AI内容创作助手 ✨
           </a>
-          <a href="/dashboard">
-            <Button variant="outline">返回仪表板</Button>
+          <a href="/">
+            <Button variant="ghost" size="sm">返回首页</Button>
           </a>
         </div>
       </nav>
 
-      <div className="container mx-auto px-4 py-8">
-        <div className="max-w-5xl mx-auto">
-          <h1 className="text-3xl font-bold mb-2">AI内容生成器</h1>
-          <p className="text-gray-600 mb-8">选择内容类型，输入需求，AI将为您智能创作文案和配图</p>
-
-          <div className="grid md:grid-cols-2 gap-8">
-            {/* 输入区域 */}
-            <div className="space-y-6">
-              {/* 内容类型选择 */}
-              <Card>
-                <CardHeader>
-                  <CardTitle>选择内容类型</CardTitle>
-                  <CardDescription>选择您想要生成的内容类型</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-2 gap-2">
-                    {contentTypes.map((type) => (
-                      <button
-                        key={type.value}
-                        onClick={() => setSelectedType(type.value)}
-                        className={`p-3 text-left rounded-lg border transition ${
-                          selectedType === type.value
-                            ? 'border-primary bg-primary/5'
-                            : 'border-gray-200 hover:border-gray-300'
-                        }`}
-                      >
-                        <div className="font-medium">{type.label}</div>
-                        <div className="text-xs text-gray-500">{type.description}</div>
-                      </button>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* 输入描述 */}
-              <Card>
-                <CardHeader>
-                  <CardTitle>内容描述</CardTitle>
-                  <CardDescription>详细描述您想要生成的内容</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="title">标题/主题 *</Label>
-                    <Input
-                      id="title"
-                      placeholder="例如：小红书春日穿搭推荐"
-                      value={input}
-                      onChange={(e) => setInput(e.target.value)}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="details">详细要求（可选）</Label>
-                    <Textarea
-                      id="details"
-                      placeholder="例如：需要包含3套穿搭方案，语言风格轻松活泼..."
-                      rows={4}
-                      value={details}
-                      onChange={(e) => setDetails(e.target.value)}
-                    />
-                  </div>
-                  
-                  {error && (
-                    <div className="p-3 text-sm text-red-600 bg-red-50 rounded-lg">
-                      {error}
-                    </div>
-                  )}
-                  
-                  <Button
-                    className="w-full"
-                    onClick={handleGenerate}
-                    disabled={isLoading || !input.trim()}
+      {/* 对话区域 */}
+      <div className="container mx-auto px-4 py-6 max-w-2xl">
+        <Card className="border-0 shadow-lg">
+          <CardHeader className="bg-gradient-to-r from-pink-500 to-purple-500 text-white rounded-t-lg">
+            <CardTitle className="text-center">
+              💬 智能创作助手
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            {/* 消息列表 */}
+            <div className="h-[500px] overflow-y-auto p-4 space-y-4">
+              {messages.map((message) => (
+                <div
+                  key={message.id}
+                  className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div
+                    className={`max-w-[85%] ${
+                      message.role === 'user'
+                        ? 'bg-pink-500 text-white rounded-2xl rounded-br-md'
+                        : 'bg-gray-100 text-gray-800 rounded-2xl rounded-bl-md'
+                    } px-4 py-3`}
                   >
-                    {isLoading ? 'AI 正在创作中...' : '开始生成'}
-                  </Button>
-                </CardContent>
-              </Card>
-            </div>
-
-            {/* 输出区域 */}
-            <div className="space-y-6">
-              {/* 文案结果 */}
-              <Card>
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <CardTitle>生成文案</CardTitle>
-                      <CardDescription>AI 为您创作的内容</CardDescription>
-                    </div>
-                    {output && (
-                      <Button variant="outline" size="sm" onClick={handleCopy}>
-                        复制文案
-                      </Button>
+                    {/* 文本内容 */}
+                    {message.type === 'text' && (
+                      <p className="whitespace-pre-wrap text-sm">{message.content}</p>
                     )}
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  {isLoading ? (
-                    <div className="flex items-center justify-center h-48">
-                      <div className="text-center">
-                        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-primary mx-auto mb-3"></div>
-                        <p className="text-gray-500 text-sm">AI 正在创作中...</p>
-                      </div>
-                    </div>
-                  ) : output ? (
-                    <div className="prose prose-sm max-w-none bg-gray-50 p-4 rounded-lg max-h-[300px] overflow-y-auto">
-                      <pre className="whitespace-pre-wrap font-sans text-sm">
-                        {output}
-                      </pre>
-                    </div>
-                  ) : (
-                    <div className="flex items-center justify-center h-48 text-gray-400">
-                      <p>文案将显示在这里</p>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
 
-              {/* 配图推荐 */}
-              {(output || isLoadingImages) && (
-                <Card>
-                  <CardHeader>
-                    <CardTitle>推荐配图</CardTitle>
-                    <CardDescription>
-                      来自 Pexels 的高质量版权图片
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    {isLoadingImages ? (
-                      <div className="flex items-center justify-center h-32">
-                        <div className="text-center">
-                          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-2"></div>
-                          <p className="text-gray-500 text-sm">正在搜索配图...</p>
+                    {/* 选项内容 */}
+                    {message.type === 'options' && (
+                      <div className="space-y-2">
+                        <p className="text-sm mb-3">{message.content}</p>
+                        <div className="flex flex-wrap gap-2">
+                          {message.options?.map((option, idx) => (
+                            <button
+                              key={idx}
+                              onClick={() => handleOptionClick(option.value)}
+                              className="px-3 py-2 bg-white border border-gray-200 rounded-full text-sm hover:border-pink-400 hover:text-pink-600 transition"
+                            >
+                              {option.label}
+                            </button>
+                          ))}
                         </div>
                       </div>
-                    ) : images.length > 0 ? (
-                      <div className="grid grid-cols-3 gap-3">
-                        {images.map((img) => (
-                          <div key={img.id} className="group relative">
-                            <img
-                              src={img.urls.small}
-                              alt={img.alt_description}
-                              className="w-full h-32 object-cover rounded-lg"
-                            />
-                            <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition rounded-lg flex items-center justify-center gap-2">
-                              <Button
-                                size="sm"
-                                variant="secondary"
-                                onClick={() => window.open(img.urls.regular, '_blank')}
-                              >
-                                查看
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="secondary"
-                                onClick={() => handleDownloadImage(img.urls.regular, `image-${img.id}`)}
-                              >
-                                下载
-                              </Button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-                    
-                    {images.length > 0 && (
-                      <p className="text-xs text-gray-500 mt-3">
-                        💡 提示：悬停图片可查看大图或下载
-                      </p>
                     )}
-                  </CardContent>
-                </Card>
+
+                    {/* 结果内容 */}
+                    {message.type === 'result' && (
+                      <div className="space-y-3">
+                        <div className="bg-white rounded-lg p-4 text-gray-800 text-sm whitespace-pre-wrap border">
+                          {message.content}
+                        </div>
+                        
+                        {/* 操作按钮 */}
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleCopy(message.content)}
+                            className="px-3 py-1 bg-pink-100 text-pink-600 rounded text-xs hover:bg-pink-200"
+                          >
+                            📋 复制文案
+                          </button>
+                        </div>
+
+                        {/* 配图 */}
+                        {message.images && message.images.length > 0 && (
+                          <div className="grid grid-cols-3 gap-2 mt-3">
+                            {message.images.map((img) => (
+                              <div key={img.id} className="group relative">
+                                <img
+                                  src={img.urls.small}
+                                  alt={img.alt_description}
+                                  className="w-full h-20 object-cover rounded"
+                                />
+                                <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition rounded flex items-center justify-center">
+                                  <button
+                                    onClick={() => window.open(img.urls.regular, '_blank')}
+                                    className="px-2 py-1 bg-white rounded text-xs"
+                                  >
+                                    查看
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+              
+              {/* 加载中 */}
+              {isLoading && (
+                <div className="flex justify-start">
+                  <div className="bg-gray-100 rounded-2xl rounded-bl-md px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-pink-500"></div>
+                      <span className="text-sm text-gray-500">AI正在思考...</span>
+                    </div>
+                  </div>
+                </div>
               )}
+              
+              <div ref={messagesEndRef} />
             </div>
-          </div>
-        </div>
+
+            {/* 输入区域 */}
+            <div className="border-t p-4">
+              <div className="flex gap-2">
+                <Input
+                  ref={inputRef}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+                  placeholder="输入你想创作的内容..."
+                  className="flex-1 rounded-full"
+                  disabled={isLoading}
+                />
+                <Button
+                  onClick={handleSend}
+                  disabled={isLoading || !input.trim()}
+                  className="rounded-full px-6 bg-pink-500 hover:bg-pink-600"
+                >
+                  发送
+                </Button>
+              </div>
+              <p className="text-xs text-gray-400 mt-2 text-center">
+                💡 提示：直接描述你想创作的内容，AI会引导你完成
+              </p>
+            </div>
+          </CardContent>
+        </Card>
       </div>
     </main>
   )
