@@ -70,6 +70,23 @@ export default function GeneratorPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  // 根据上下文推断正确的阶段，解决状态更新延迟问题
+  const inferStage = (
+    currentContext: typeof context, 
+    currentStage: ConversationStage
+  ): ConversationStage => {
+    // 如果有主题但没有风格，应该在 ask_style 阶段
+    if (currentContext.topic && !currentContext.style) {
+      return 'ask_style'
+    }
+    // 如果有分类但没有主题，应该在 ask_topic 阶段
+    if (currentContext.category && !currentContext.topic) {
+      return 'ask_topic'
+    }
+    // 否则使用当前阶段
+    return currentStage
+  }
+
   // 发送消息
   const handleSend = async () => {
     if (!input.trim() || isLoading) return
@@ -87,8 +104,11 @@ export default function GeneratorPage() {
     setIsLoading(true)
 
     try {
+      // 根据上下文推断正确的阶段，避免状态更新延迟问题
+      const effectiveStage = inferStage(context, stage)
+      
       // 根据当前阶段处理
-      const response = await processUserInput(userInput, context, stage)
+      const response = await processUserInput(userInput, context, effectiveStage)
       
       setMessages(prev => [...prev, ...response.messages])
       
@@ -136,7 +156,10 @@ export default function GeneratorPage() {
     setIsLoading(true)
     
     try {
-      const response = await processUserInput(value, context, stage)
+      // 根据输入内容和上下文推断正确的阶段，避免状态更新延迟问题
+      const effectiveStage = inferStage(context, stage)
+      
+      const response = await processUserInput(value, context, effectiveStage)
       
       setMessages(prev => [...prev, ...response.messages])
       
