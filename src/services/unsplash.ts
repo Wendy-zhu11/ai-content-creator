@@ -242,7 +242,7 @@ class ImageService {
     queries.push('lifestyle')
     
     // 去重
-    return [...new Set(queries)]
+    return Array.from(new Set(queries))
   }
 
   /**
