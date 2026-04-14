@@ -323,8 +323,16 @@ export default function GeneratorPage() {
       const data = await response.json()
 
       if (data.success) {
-        // 获取配图
-        const imagesResponse = await fetch(`/api/images?query=${encodeURIComponent(finalInput)}&count=6`)
+        // 使用AI生成配图
+        const imagesResponse = await fetch('/api/images', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            content: data.data,
+            category: context.category || '生活',
+            count: 3,
+          }),
+        })
         const imagesData = await imagesResponse.json()
         
         const resultMessage: Message = {
